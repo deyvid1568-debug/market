@@ -1,5 +1,6 @@
 package com.github.dev.deyvid.market.modules.product.service;
 
+import com.github.dev.deyvid.market.infrastructure.exceptions.ResourceNotFoundException;
 import com.github.dev.deyvid.market.modules.product.dto.ProductRequestDTO;
 import com.github.dev.deyvid.market.modules.product.dto.ProductResponseDTO;
 import com.github.dev.deyvid.market.modules.product.model.Product;
@@ -14,7 +15,7 @@ public class ProductService {
 
     private final ProductRepository productRepository;
 
-    public ProductService(ProductRepository productRepository) {
+        public ProductService(ProductRepository productRepository) {
         this.productRepository = productRepository;
     }
 
@@ -40,7 +41,7 @@ public class ProductService {
     @Transactional(readOnly = true)
     public ProductResponseDTO findById(Long id) {
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Produto não encontrado para o ID: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Produto não encontrado para o ID: " + id));
 
         return new ProductResponseDTO(product);
     }
@@ -48,7 +49,7 @@ public class ProductService {
     @Transactional(readOnly = true)
     public ProductResponseDTO findBySku(String sku) {
         Product product = productRepository.findBySku(sku)
-                .orElseThrow(() -> new IllegalArgumentException("Produto não encontrado para o SKU: " + sku));
+                .orElseThrow(() -> new ResourceNotFoundException("Produto não encontrado para o SKU: " + sku));
 
         return new ProductResponseDTO(product);
     }
