@@ -1,0 +1,1577 @@
+﻿==================================================
+FILE: .mvn\wrapper\maven-wrapper.properties
+==================================================
+wrapperVersion=3.3.4
+distributionType=only-script
+distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\config\SecurityConfig.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.config;
+
+import com.github.dev.deyvid.market.infrastructure.security.JwtAuthenticationFilter;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        return http.csrf(csrf -> csrf.disable())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(HttpMethod.POST, "/auth/**").permitAll()
+                        .anyRequest().authenticated()
+                )
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .build();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration authenticationConfiguration) throws Exception {
+        return authenticationConfiguration.getAuthenticationManager();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\exceptions\ApiErrorResponse.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.exceptions;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.time.LocalDateTime;
+import java.util.Map;
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record ApiErrorResponse(
+        LocalDateTime timestamp,
+        int status,
+        String error,
+        String message,
+        Map<String, String> validationErrors
+) {
+    public ApiErrorResponse(int status, String error, String message) {
+        this(LocalDateTime.now(), status, error, message, null);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\exceptions\EmailAlreadyExistsException.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.exceptions;
+
+public class EmailAlreadyExistsException extends RuntimeException {
+    public EmailAlreadyExistsException(String message) {
+        super(message);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\exceptions\GlobalExceptionHandler.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.exceptions;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleResourceNotFound(ResourceNotFoundException ex) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                HttpStatus.NOT_FOUND.value(),
+                "Not Found",
+                ex.getMessage()
+        );
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiErrorResponse> handleValidationExceptions(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+
+        for (FieldError error : ex.getBindingResult().getFieldErrors()) {
+            errors.put(error.getField(), error.getDefaultMessage());
+        }
+
+        ApiErrorResponse response = new ApiErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                "Validation Error",
+                "HÃ¡ campos invÃ¡lidos na requisiÃ§Ã£o",
+                errors
+        );
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiErrorResponse> handleGenericException(Exception ex) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                "Internal Server Error",
+                "Ocorreu um erro interno inesperado no servidor."
+        );
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+    }
+
+    @ExceptionHandler(EmailAlreadyExistsException.class)
+    public ResponseEntity<ApiErrorResponse> handleEmailAlreadyExists(EmailAlreadyExistsException ex) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                ex.getMessage()
+        );
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\exceptions\ResourceNotFoundException.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.exceptions;
+
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String message) {
+        super(message);
+    }
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\security\JwtAuthenticationFilter.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.security;
+
+import com.github.dev.deyvid.market.modules.auth.repository.UserRepository;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private final JwtTokenProvider tokenProvider;
+    private final UserRepository userRepository;
+
+    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider, UserRepository userRepository) {
+        this.tokenProvider = tokenProvider;
+        this.userRepository = userRepository;
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        String token = recoverToken(request);
+
+        if (token != null) {
+            String email = tokenProvider.validateToken(token);
+
+            if (!email.isEmpty()) {
+                UserDetails user = userRepository.findByEmail(email).orElse(null);
+
+                if (user != null) {
+                    var authentication = new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
+
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                }
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+
+    private String recoverToken(HttpServletRequest request) {
+        String authHeader = request.getHeader("Authorization");
+        if (authHeader == null) {
+            return null;
+        }
+        return authHeader.replace("Bearer ", "");
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\infrastructure\security\JwtTokenProvider.java
+==================================================
+package com.github.dev.deyvid.market.infrastructure.security;
+
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.exceptions.JWTCreationException;
+import com.auth0.jwt.exceptions.JWTVerificationException;
+import com.github.dev.deyvid.market.modules.auth.model.User;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
+@Component
+public class JwtTokenProvider {
+
+    @Value("${api.security.token.secret:my-secret-key-default}")
+    private String secretKey;
+
+    public String generateToken(User user) {
+        try {
+            Algorithm algorithm = Algorithm.HMAC256(secretKey);
+            return JWT.create()
+                    .withIssuer("market-api")
+                    .withSubject(user.getEmail())
+                    .withExpiresAt(generateExpirationDate())
+                    .sign(algorithm);
+        } catch (JWTCreationException exception) {
+            throw new RuntimeException("Erro ao tentar gerar o token JWT", exception);
+        }
+    }
+
+    public String validateToken(String token) {
+        try {
+            Algorithm algorithm = Algorithm.HMAC256(secretKey);
+            return JWT.require(algorithm)
+                    .withIssuer("market-api")
+                    .build()
+                    .verify(token)
+                    .getSubject();
+        } catch (JWTVerificationException exception) {
+            return "";
+        }
+    }
+
+    private Instant generateExpirationDate() {
+        return LocalDateTime.now().plusHours(2).toInstant(ZoneOffset.of("-03:00"));
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\controller\AuthController.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.controller;
+
+import com.github.dev.deyvid.market.modules.auth.dto.LoginDTO;
+import com.github.dev.deyvid.market.modules.auth.dto.LoginResponseDTO;
+import com.github.dev.deyvid.market.modules.auth.dto.RegisterDTO;
+import com.github.dev.deyvid.market.modules.auth.model.User;
+import com.github.dev.deyvid.market.modules.auth.service.AuthService;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/auth")
+public class AuthController {
+
+    private final AuthService authService;
+
+    public AuthController(AuthService authService) {
+        this.authService = authService;
+    }
+
+    @PostMapping("/register")
+    public ResponseEntity<User> register(@RequestBody @Valid RegisterDTO data) {
+        User newUser = authService.register(data.email(), data.password(), data.name());
+        return ResponseEntity.ok(newUser);
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<LoginResponseDTO> login(@RequestBody @Valid LoginDTO data) {
+        String token = authService.login(data.email(), data.password());
+        return ResponseEntity.ok(new LoginResponseDTO(token));
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\dto\LoginDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.dto;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+
+public record LoginDTO(
+        @NotBlank(message = "O e-mail Ã© obrigatÃ³rio")
+        @Email(message = "Formato de e-mail invÃ¡lido")
+        String email,
+
+        @NotBlank(message = "A senha Ã© obrigatÃ³ria")
+        String password) {}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\dto\LoginResponseDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.dto;
+
+public record LoginResponseDTO(String token) {}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\dto\RegisterDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.dto;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
+public record RegisterDTO(
+        @NotBlank (message = "O nome Ã© obrigatÃ³rio")
+        String name,
+
+        @NotBlank(message = "O e-mail Ã© obrigatÃ³rio")
+        @Email(message = "Formato de s-mail invÃ¡lido")
+        String email,
+
+        @NotBlank(message = "A senha Ã© obrigatÃ³ria")
+        @Size(min = 6, message = "A senha deve ter pelo menos 6 caracteres")
+        String password) {}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\model\Role.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.model;
+
+public enum Role {
+    ADMIN,
+    USER,
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\model\User.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
+
+@Entity
+@Table(name = "tb_users")
+@Getter
+@Setter
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@EqualsAndHashCode(of = "id")
+public class User implements UserDetails {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @Column(nullable = false)
+    private String password;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Role role;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    public void prePersist() {
+        this.createdAt = LocalDateTime.now();
+        if (this.role == null) {
+            this.role = Role.USER;
+        }
+    }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        if (this.role == Role.ADMIN) {
+            return List.of(new SimpleGrantedAuthority("ROLE_ADMIN"), new SimpleGrantedAuthority("ROLE_USER"));
+        }
+        return List.of(new SimpleGrantedAuthority("ROLE_USER"));
+    }
+
+    @Override
+    public String getUsername() {
+        return this.email;
+    }
+
+    @Override
+    public String getPassword() {
+        return this.password;
+    }
+
+    @Override
+    public boolean isAccountNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isAccountNonLocked() {
+        return true;
+    }
+
+    @Override
+    public boolean isCredentialsNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return true;
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\repository\UserRepository.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.repository;
+
+import com.github.dev.deyvid.market.modules.auth.model.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface UserRepository extends JpaRepository<User, Long> {
+
+    Optional<User> findByEmail(String email);
+
+    boolean existsByEmail(String email);
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\auth\service\AuthService.java
+==================================================
+package com.github.dev.deyvid.market.modules.auth.service;
+
+import com.github.dev.deyvid.market.infrastructure.exceptions.EmailAlreadyExistsException;
+import com.github.dev.deyvid.market.infrastructure.security.JwtTokenProvider;
+import com.github.dev.deyvid.market.modules.auth.model.User;
+import com.github.dev.deyvid.market.modules.auth.repository.UserRepository;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AuthService {
+
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtTokenProvider tokenProvider;
+    private final AuthenticationManager authenticationManager;
+
+    public AuthService(UserRepository userRepository,
+                       PasswordEncoder passwordEncoder,
+                       JwtTokenProvider tokenProvider,
+                       AuthenticationManager authenticationManager) {
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.tokenProvider = tokenProvider;
+        this.authenticationManager = authenticationManager;
+    }
+
+    public User register(String email, String rawPassword, String name) {
+        if (userRepository.existsByEmail(email)) {
+            throw new EmailAlreadyExistsException("E-mail jÃ¡ cadastrado no sistema.");
+        }
+
+        String encryptedPassword = passwordEncoder.encode(rawPassword);
+
+        User newUser = new User();
+        newUser.setEmail(email);
+        newUser.setPassword(encryptedPassword);
+        newUser.setName(name);
+
+        return userRepository.save(newUser);
+    }
+
+    public String login(String email, String rawPassword) {
+        var usernamePassword = new UsernamePasswordAuthenticationToken(email, rawPassword);
+        var auth = this.authenticationManager.authenticate(usernamePassword);
+
+        User user = (User) auth.getPrincipal();
+
+        return tokenProvider.generateToken(user);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\controller\ProductController.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.controller;
+
+import com.github.dev.deyvid.market.modules.product.dto.ProductRequestDTO;
+import com.github.dev.deyvid.market.modules.product.dto.ProductResponseDTO;
+import com.github.dev.deyvid.market.modules.product.service.ProductService;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/products")
+public class ProductController {
+
+    private final ProductService productService;
+
+    public ProductController(ProductService productService) {
+        this.productService = productService;
+    }
+
+    @PostMapping
+    public ResponseEntity<ProductResponseDTO> create(@RequestBody @Valid ProductRequestDTO requestDTO) {
+        ProductResponseDTO responseDTO = productService.create(requestDTO);
+        return ResponseEntity.status(HttpStatus.CREATED).body(responseDTO);
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<ProductResponseDTO> findById(@PathVariable Long id) {
+        ProductResponseDTO responseDTO = productService.findById(id);
+        return ResponseEntity.ok(responseDTO);
+    }
+
+    @GetMapping("/sku/{sku}")
+    public ResponseEntity<ProductResponseDTO> findBySku(@PathVariable String sku) {
+        ProductResponseDTO responseDTO = productService.findBySku(sku);
+        return ResponseEntity.ok(responseDTO);
+    }
+
+    @GetMapping
+    public ResponseEntity<List<ProductResponseDTO>> findAll() {
+        List<ProductResponseDTO> list = productService.findAll();
+        return ResponseEntity.ok(list);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\dto\ProductRequestDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
+
+import java.math.BigDecimal;
+
+public record ProductRequestDTO(
+
+        @NotBlank(message = "O nome do produto Ã© obrigatÃ³rio")
+        @Size(min = 2, max = 100, message = "O nome deve ter entre 2 e 100 caracteres")
+        String name,
+
+        String description,
+
+        @NotBlank(message = "O SKU Ã© obrigatÃ³rio")
+        @Size(min = 3, max = 30, message = "O SKU deve ter entre 3 e 30 caracteres")
+        String sku,
+
+        @NotNull(message = "O preÃ§o Ã© obrigatÃ³rio")
+        @Positive(message = "O preÃ§o deve ser um valor positivo")
+        BigDecimal price,
+
+        Boolean active
+) {}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\dto\ProductResponseDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.dto;
+
+import com.github.dev.deyvid.market.modules.product.model.Product;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+public record ProductResponseDTO(
+        Long id,
+        String name,
+        String description,
+        String sku,
+        BigDecimal price,
+        Boolean active,
+        LocalDateTime createdAt
+) {
+    public ProductResponseDTO(Product product) {
+        this(
+                product.getId(),
+                product.getName(),
+                product.getDescription(),
+                product.getSku(),
+                product.getPrice(),
+                product.getActive(),
+                product.getCreatedAt()
+        );
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\model\Product.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "tb_products")
+@Getter
+@Setter
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@EqualsAndHashCode(of = "id")
+public class Product {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String name;
+
+    private String description;
+
+    @Column(nullable = false, unique = true)
+    private String sku;
+
+    @Column(nullable = false)
+    private BigDecimal price;
+
+    @Column(nullable = false)
+    private Boolean active;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @PrePersist
+    public void prePersist() {
+        this.createdAt = LocalDateTime.now();
+        if (this.active == null) {
+            this.active = true;
+        }
+    }
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\repository\ProductRepository.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.repository;
+
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface ProductRepository extends JpaRepository<Product,Long> {
+
+    boolean existsBySku(String sku);
+
+    Optional<Product> findBySku(String sku);
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\product\service\ProductService.java
+==================================================
+package com.github.dev.deyvid.market.modules.product.service;
+
+import com.github.dev.deyvid.market.infrastructure.exceptions.ResourceNotFoundException;
+import com.github.dev.deyvid.market.modules.product.dto.ProductRequestDTO;
+import com.github.dev.deyvid.market.modules.product.dto.ProductResponseDTO;
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import com.github.dev.deyvid.market.modules.product.repository.ProductRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+
+@Service
+public class ProductService {
+
+    private final ProductRepository productRepository;
+
+        public ProductService(ProductRepository productRepository) {
+        this.productRepository = productRepository;
+    }
+
+    @Transactional
+    public ProductResponseDTO create(ProductRequestDTO requestDTO) {
+        if (productRepository.existsBySku(requestDTO.sku())) {
+            throw new IllegalArgumentException("JÃ¡ existe um produto cadastrado com o SKU: " + requestDTO.sku());
+        }
+
+        Product product = Product.builder()
+                .name(requestDTO.name())
+                .description(requestDTO.description())
+                .sku(requestDTO.sku())
+                .price(requestDTO.price())
+                .active(requestDTO.active())
+                .build();
+
+        Product savedProduct = productRepository.save(product);
+
+        return new ProductResponseDTO(savedProduct);
+    }
+
+    @Transactional(readOnly = true)
+    public ProductResponseDTO findById(Long id) {
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Produto nÃ£o encontrado para o ID: " + id));
+
+        return new ProductResponseDTO(product);
+    }
+
+    @Transactional(readOnly = true)
+    public ProductResponseDTO findBySku(String sku) {
+        Product product = productRepository.findBySku(sku)
+                .orElseThrow(() -> new ResourceNotFoundException("Produto nÃ£o encontrado para o SKU: " + sku));
+
+        return new ProductResponseDTO(product);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProductResponseDTO> findAll() {
+        return productRepository.findAll()
+                .stream()
+                .map(ProductResponseDTO::new)
+                .toList();
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\controller\BatchController.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.controller;
+
+import com.github.dev.deyvid.market.modules.stock.dto.CreateOrUpdateBatchRequestDTO;
+import com.github.dev.deyvid.market.modules.stock.model.Batch;
+import com.github.dev.deyvid.market.modules.stock.service.BatchService;
+import jakarta.validation.Valid;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDate;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/batches")
+public class BatchController {
+
+    private final BatchService batchService;
+
+    public BatchController(BatchService batchService) {
+        this.batchService = batchService;
+    }
+
+    @PostMapping
+    public ResponseEntity<Batch> create(@RequestBody @Valid CreateOrUpdateBatchRequestDTO requestDTO) {
+        Batch savedBatch = batchService.createBatch(requestDTO);
+        return ResponseEntity.status(HttpStatus.CREATED).body(savedBatch);
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<Batch> update(
+            @PathVariable Long id,
+            @RequestBody @Valid CreateOrUpdateBatchRequestDTO requestDTO
+    ) {
+        Batch updatedBatch = batchService.updateBatch(id, requestDTO);
+        return ResponseEntity.ok(updatedBatch);
+    }
+
+    @GetMapping("/expiring-alert")
+    public ResponseEntity<List<Batch>> getExpiringBatches(
+            @RequestParam("date") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date
+    ) {
+        List<Batch> batches = batchService.getBatchesExpiringSoon(date);
+        return ResponseEntity.ok(batches);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\controller\StockController.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.controller;
+
+import com.github.dev.deyvid.market.modules.stock.dto.CreateOrUpdateStockRequestDTO;
+import com.github.dev.deyvid.market.modules.stock.model.Stock;
+import com.github.dev.deyvid.market.modules.stock.service.StockService;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/stocks")
+public class StockController {
+
+    private final StockService stockService;
+
+    public StockController(StockService stockService) {
+        this.stockService = stockService;
+    }
+
+    @GetMapping("/product/{productId}")
+    public ResponseEntity<Stock> findByProductId(@PathVariable Long productId) {
+        Stock stock = stockService.findByProductId(productId);
+        return ResponseEntity.ok(stock);
+    }
+
+    @GetMapping
+    public ResponseEntity<List<Stock>> findAll() {
+        List<Stock> stocks = stockService.findAll();
+        return ResponseEntity.ok(stocks);
+    }
+
+    @GetMapping("/restock-alert")
+    public ResponseEntity<List<Stock>> findProductsNeedingRestock() {
+        List<Stock> stocks = stockService.findProductsNeedingRestock();
+        return ResponseEntity.ok(stocks);
+    }
+
+    @PatchMapping("/product/{productId}/min-quantity")
+    public ResponseEntity<Stock> updateMinQuantity(
+            @PathVariable Long productId,
+            @RequestBody @Valid CreateOrUpdateStockRequestDTO requestDTO
+    ) {
+        stockService.updateMinimumStock(productId, requestDTO.minimumStock());
+
+        Stock updatedStock = stockService.findByProductId(productId);
+        return ResponseEntity.ok(updatedStock);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\dto\CreateOrUpdateBatchRequestDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.dto;
+
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+public record CreateOrUpdateBatchRequestDTO(
+        @NotBlank(message = "O nÃºmero do lote Ã© obrigatÃ³rio")
+        String batchNumber,
+
+        @NotNull(message = "O ID do produto Ã© obrigatÃ³rio")
+        Long productId,
+
+        @NotNull(message = "A quantidade Ã© obrigatÃ³ria")
+        @Positive(message = "A quantidade deve ser maior que zero")
+        BigDecimal quantity,
+
+        @NotNull(message = "O preÃ§o de compra Ã© obrigatÃ³rio")
+        @DecimalMin(value = "0.00", message = "O preÃ§o de compra deve ser maior que zero")
+        BigDecimal buyingPrice,
+
+        LocalDate expireDate
+) {}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\dto\CreateOrUpdateStockRequestDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.dto;
+
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
+
+import java.math.BigDecimal;
+
+public record CreateOrUpdateStockRequestDTO(
+        @NotNull(message = "O ID do produto Ã© obrigatÃ³rio")
+        Long productId,
+
+        @NotNull(message = "O estoque mÃ­nimo Ã© obrigatÃ³rio")
+        @PositiveOrZero(message = "O estoque mÃ­nimo nÃ£o pode ser negativo")
+        BigDecimal minimumStock
+) {}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\dto\StockResponseDTO.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.dto;
+
+import java.time.LocalDateTime;
+
+public record StockResponseDTO(
+        Long stockId,
+        Long productId,
+        String productName,
+        Long totalQuantity,
+        Long minimumStock,
+        boolean isLowStock,
+        LocalDateTime updatedAt
+) {}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\model\Batch.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.model;
+
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+@AllArgsConstructor
+@NoArgsConstructor
+@Setter
+@Getter
+@Entity
+@Table(name = "tb_batch")
+public class Batch {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String batchNumber;
+
+    @ManyToOne
+    @JoinColumn(name = "product_id", nullable = false)
+    private Product product;
+
+    @Column(nullable = false)
+    private BigDecimal quantity;
+
+    @Column(nullable = false)
+    private BigDecimal buyingPrice;
+
+    private LocalDate expireDate;
+}
+
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\model\Stock.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.model;
+
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@AllArgsConstructor
+@NoArgsConstructor
+@Setter
+@Getter
+@Entity
+@Table(name = "tb_stock")
+public class Stock {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @OneToOne
+    @JoinColumn(name = "product_id", nullable = false, unique = true)
+    private Product product;
+
+    @Column(nullable = false)
+    private BigDecimal totalQuantity = BigDecimal.ZERO;
+
+    @Column(nullable = false)
+    private BigDecimal minimumStock = BigDecimal.ZERO;
+
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\repository\BatchRepository.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.repository;
+
+import com.github.dev.deyvid.market.modules.stock.model.Batch;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+public interface BatchRepository extends JpaRepository<Batch, Long> {
+
+    Optional<Batch> findByBatchNumber(String batchNumber);
+
+    List<Batch> findByExpireDate(LocalDate expireDate);
+
+    List<Batch> findByProductId(Long productId);
+
+    List<Batch> findByExpireDateBefore(LocalDate date);
+
+    @Query("SELECT b FROM Batch b WHERE b.expireDate <= :limitDate ORDER BY b.expireDate ASC")
+    List<Batch> findBatchesExpiringBefore(LocalDate limitDate);
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\repository\StockRepository.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.repository;
+
+import com.github.dev.deyvid.market.modules.stock.model.Stock;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface StockRepository extends JpaRepository<Stock, Long> {
+
+    Optional<Stock> findByProductId(Long productId);
+
+    @Query("SELECT s FROM Stock s WHERE s.totalQuantity <= s.minimumStock")
+    List<Stock> findProductsNeedingRestock();
+
+}
+
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\service\BatchService.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.service;
+
+import com.github.dev.deyvid.market.infrastructure.exceptions.ResourceNotFoundException;
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import com.github.dev.deyvid.market.modules.product.repository.ProductRepository;
+import com.github.dev.deyvid.market.modules.stock.dto.CreateOrUpdateBatchRequestDTO;
+import com.github.dev.deyvid.market.modules.stock.model.Batch;
+import com.github.dev.deyvid.market.modules.stock.repository.BatchRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+@Service
+public class BatchService {
+
+    private final BatchRepository batchRepository;
+    private final ProductRepository productRepository;
+    private final StockService stockService;
+
+    public BatchService(BatchRepository batchRepository, ProductRepository productRepository, StockService stockService) {
+        this.batchRepository = batchRepository;
+        this.productRepository = productRepository;
+        this.stockService = stockService;
+    }
+
+    @Transactional
+    public Batch createBatch(CreateOrUpdateBatchRequestDTO request) {
+        Product product = productRepository.findById(request.productId())
+                .orElseThrow(() -> new ResourceNotFoundException("Produto nÃ£o encontrado com ID: " + request.productId()));
+
+        Batch batch = new Batch();
+        batch.setProduct(product);
+        batch.setBatchNumber(request.batchNumber());
+        batch.setQuantity(request.quantity());
+        batch.setBuyingPrice(request.buyingPrice());
+        batch.setExpireDate(request.expireDate());
+
+        Batch savedBatch = batchRepository.save(batch);
+
+        stockService.addQuantity(product.getId(), savedBatch.getQuantity());
+
+        return savedBatch;
+    }
+
+    @Transactional
+    public Batch updateBatch(Long batchId, CreateOrUpdateBatchRequestDTO request) {
+
+        Batch existingBatch = batchRepository.findById(batchId)
+                .orElseThrow(() -> new ResourceNotFoundException("Lote nÃ£o encontrado com ID: " + batchId));
+
+        BigDecimal oldQuantity = existingBatch.getQuantity();
+        BigDecimal newQuantity = request.quantity();
+        BigDecimal difference = newQuantity.subtract(oldQuantity);
+
+        existingBatch.setBatchNumber(request.batchNumber());
+        existingBatch.setQuantity(newQuantity);
+        existingBatch.setBuyingPrice(request.buyingPrice());
+        existingBatch.setExpireDate(request.expireDate());
+
+        Batch savedBatch = batchRepository.save(existingBatch);
+
+        if (difference.compareTo(BigDecimal.ZERO) != 0) {
+            if (difference.compareTo(BigDecimal.ZERO) > 0) {
+                stockService.addQuantity(existingBatch.getProduct().getId(), difference);
+            } else {
+                stockService.decreaseQuantity(existingBatch.getProduct().getId(), difference.abs());
+            }
+        }
+
+        return savedBatch;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Batch> getBatchesExpiringSoon(LocalDate limitDate) {
+        return batchRepository.findBatchesExpiringBefore(limitDate);
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\modules\stock\service\StockService.java
+==================================================
+package com.github.dev.deyvid.market.modules.stock.service;
+
+import com.github.dev.deyvid.market.infrastructure.exceptions.ResourceNotFoundException;
+import com.github.dev.deyvid.market.modules.product.model.Product;
+import com.github.dev.deyvid.market.modules.product.repository.ProductRepository;
+import com.github.dev.deyvid.market.modules.stock.model.Stock;
+import com.github.dev.deyvid.market.modules.stock.repository.StockRepository;
+import jakarta.persistence.EntityNotFoundException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+@Service
+public class StockService {
+
+    private final StockRepository stockRepository;
+    private final ProductRepository productRepository;
+
+    public StockService(StockRepository stockRepository, ProductRepository productRepository) {
+        this.stockRepository = stockRepository;
+        this.productRepository = productRepository;
+    }
+
+    @Transactional
+    public void addQuantity(Long productId, BigDecimal quantityToAdd) {
+        Stock stock = getOrCreateStock(productId);
+        stock.setTotalQuantity(stock.getTotalQuantity().add(quantityToAdd));
+        stockRepository.save(stock);
+    }
+
+    @Transactional
+    public void decreaseQuantity(Long productId, BigDecimal quantityToSubtract) {
+        Stock stock = stockRepository.findByProductId(productId)
+                .orElseThrow(() -> new EntityNotFoundException("Estoque nÃ£o encontrado para o produto ID: " + productId));
+
+        if (stock.getTotalQuantity().compareTo(quantityToSubtract) < 0) {
+            throw new IllegalArgumentException("Estoque insuficiente para baixa. Saldo atual: " + stock.getTotalQuantity());
+        }
+
+        stock.setTotalQuantity(stock.getTotalQuantity().subtract(quantityToSubtract));
+        stockRepository.save(stock);
+    }
+
+    @Transactional
+    public void updateMinimumStock(Long productId, BigDecimal newMinimumStock) {
+        Stock stock = getOrCreateStock(productId);
+        stock.setMinimumStock(newMinimumStock);
+        stockRepository.save(stock);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Stock> findProductsNeedingRestock() {
+        return stockRepository.findProductsNeedingRestock();
+    }
+
+    private Stock getOrCreateStock(Long productId) {
+        return stockRepository.findByProductId(productId)
+                .orElseGet(() -> {
+                    Product product = productRepository.findById(productId)
+                            .orElseThrow(() -> new ResourceNotFoundException("Produto nÃ£o encontrado com ID: " + productId));
+
+                    Stock newStock = new Stock();
+                    newStock.setProduct(product);
+                    newStock.setTotalQuantity(BigDecimal.ZERO);
+                    newStock.setMinimumStock(BigDecimal.ZERO);
+                    return stockRepository.save(newStock);
+                });
+    }
+
+    @Transactional(readOnly = true)
+    public Stock findByProductId(Long productId) {
+        return stockRepository.findByProductId(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Estoque nÃ£o encontrado para o produto ID: " + productId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<Stock> findAll() {
+        return stockRepository.findAll();
+    }
+}
+
+
+
+==================================================
+FILE: src\main\java\com\github\dev\deyvid\market\MarketApplication.java
+==================================================
+package com.github.dev.deyvid.market;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class MarketApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(MarketApplication.class, args);
+	}
+
+}
+
+
+
+
+==================================================
+FILE: src\main\resources\application.properties
+==================================================
+spring.application.name=market
+
+
+
+
+==================================================
+FILE: src\test\java\com\github\dev\deyvid\market\MarketApplicationTests.java
+==================================================
+package com.github.dev.deyvid.market;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest
+class MarketApplicationTests {
+
+	@Test
+	void contextLoads() {
+	}
+
+}
+
+
+
+
+==================================================
+FILE: HELP.md
+==================================================
+# Getting Started
+
+### Reference Documentation
+For further reference, please consider the following sections:
+
+* [Official Apache Maven documentation](https://maven.apache.org/guides/index.html)
+* [Spring Boot Maven Plugin Reference Guide](https://docs.spring.io/spring-boot/4.1.1/maven-plugin)
+* [Create an OCI image](https://docs.spring.io/spring-boot/4.1.1/maven-plugin/build-image.html)
+* [Spring Web](https://docs.spring.io/spring-boot/4.1.1/reference/web/servlet.html)
+* [Spring Data JPA](https://docs.spring.io/spring-boot/4.1.1/reference/data/sql.html#data.sql.jpa-and-spring-data)
+* [Validation](https://docs.spring.io/spring-boot/4.1.1/reference/io/validation.html)
+
+### Guides
+The following guides illustrate how to use some features concretely:
+
+* [Building a RESTful Web Service](https://spring.io/guides/gs/rest-service/)
+* [Serving Web Content with Spring MVC](https://spring.io/guides/gs/serving-web-content/)
+* [Building REST services with Spring](https://spring.io/guides/tutorials/rest/)
+* [Accessing Data with JPA](https://spring.io/guides/gs/accessing-data-jpa/)
+* [Validation](https://spring.io/guides/gs/validating-form-input/)
+
+### Maven Parent overrides
+
+Due to Maven's design, elements are inherited from the parent POM to the project POM.
+While most of the inheritance is fine, it also inherits unwanted elements like `<license>` and `<developers>` from the parent.
+To prevent this, the project POM contains empty overrides for these elements.
+If you manually switch to a different parent and actually want the inheritance, you need to remove those overrides.
+
+
+
+
+
+==================================================
+FILE: pom.xml
+==================================================
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.1</version>
+		<relativePath/> <!-- lookup parent from repository -->
+	</parent>
+	<groupId>com.github.dev.deyvid</groupId>
+	<artifactId>market</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<name/>
+	<description/>
+	<url/>
+	<licenses>
+		<license/>
+	</licenses>
+	<developers>
+		<developer/>
+	</developers>
+	<scm>
+		<connection/>
+		<developerConnection/>
+		<tag/>
+		<url/>
+	</scm>
+	<properties>
+		<java.version>21</java.version>
+	</properties>
+	<dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.auth0</groupId>
+            <artifactId>java-jwt</artifactId>
+            <version>4.4.0</version>
+        </dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<optional>true</optional>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.8.5</version>
+        </dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>default-compile</id>
+						<phase>compile</phase>
+						<goals>
+							<goal>compile</goal>
+						</goals>
+						<configuration>
+							<annotationProcessorPaths>
+								<path>
+									<groupId>org.projectlombok</groupId>
+									<artifactId>lombok</artifactId>
+								</path>
+							</annotationProcessorPaths>
+						</configuration>
+					</execution>
+					<execution>
+						<id>default-testCompile</id>
+						<phase>test-compile</phase>
+						<goals>
+							<goal>testCompile</goal>
+						</goals>
+						<configuration>
+							<annotationProcessorPaths>
+								<path>
+									<groupId>org.projectlombok</groupId>
+									<artifactId>lombok</artifactId>
+								</path>
+							</annotationProcessorPaths>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>
+
+
+
+

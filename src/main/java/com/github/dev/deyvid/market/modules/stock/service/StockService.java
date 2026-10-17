@@ -33,7 +33,7 @@ public class StockService {
     @Transactional
     public void decreaseQuantity(Long productId, BigDecimal quantityToSubtract) {
         Stock stock = stockRepository.findByProductId(productId)
-                .orElseThrow(() -> new EntityNotFoundException("Estoque não encontrado para o produto ID: " + productId));
+                .orElseThrow(() -> new ResourceNotFoundException("Estoque não encontrado para o produto ID: " + productId));
 
         if (stock.getTotalQuantity().compareTo(quantityToSubtract) < 0) {
             throw new IllegalArgumentException("Estoque insuficiente para baixa. Saldo atual: " + stock.getTotalQuantity());
